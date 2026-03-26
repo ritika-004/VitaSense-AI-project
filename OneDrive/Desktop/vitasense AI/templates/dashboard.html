@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>VitalSenseAI Dashboard</title>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; background:#f5f5f5; color:#333; margin:0; padding:0; }
+        .container { width:92%; max-width:1200px; margin:18px auto 80px; }
+        h1 { text-align:center; margin-top:6px; color:#1976d2; }
+        .controls { text-align:center; margin:12px 0 18px; }
+        button { background:#1976d2; color:#fff; padding:10px 20px; border:none; border-radius:6px; font-size:16px; cursor:pointer; margin:0 8px; }
+        button#downloadBtn { background:#388e3c; }
+        .card { background:#fff; padding:20px; margin:18px 0; border-radius:12px; box-shadow:0 6px 14px rgba(0,0,0,0.06); }
+        .row { display:flex; gap:20px; align-items:flex-start; flex-wrap:wrap; }
+        .col { flex:1 1 48%; min-width:300px; }
+        pre { background:#f9f9f9; padding:14px; border-radius:8px; white-space:pre-wrap; font-size:14px; }
+        canvas { width:100% !important; height:300px !important; }
+        #map { height:300px; width:100%; border-radius:8px; }
+        .ppg-desc { margin-top:10px; background:#fcfcfc; padding:12px; border-radius:8px; font-size:14px; color:#444; }
+        .ppg-explanation { margin-top:12px; background:#e3f2fd; padding:14px; border-radius:8px; border-left:4px solid #1976d2; }
+        .ppg-explanation h4 { margin:0 0 10px 0; color:#1976d2; font-size:15px; }
+        .ppg-explanation ul { margin:8px 0; padding-left:20px; }
+        .ppg-explanation li { margin:6px 0; line-height:1.5; }
+        .param-table { width:100%; border-collapse:collapse; margin-top:10px; }
+        .param-table th, .param-table td { border:1px solid #ddd; padding:8px; text-align:center; }
+        .param-table th { background:#1976d2; color:white; }
+        .status-normal { color:#388e3c; font-weight:bold; }
+        .status-abnormal { color:#d32f2f; font-weight:bold; }
+        .small { font-size:13px; color:#666; }
+        .flex-between { display:flex; justify-content:space-between; align-items:center; gap:12px; }
+        @media (max-width:900px) { .row { flex-direction:column; } .col { flex-basis:100%; } }
+        .model-block { margin-top:12px; }
+        .model-title { background:#1976d2; color:#fff; padding:8px 12px; border-radius:8px; display:inline-block; margin-bottom:8px; }
+        .abr-charts { display:flex; gap:12px; flex-wrap:wrap; }
+        .abr-chart { flex:1 1 32%; min-width:220px; background:#fff; padding:10px; border-radius:8px; box-shadow:0 2px 8px rgba(0,0,0,0.05); }
+        .patient-inputs { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:10px; justify-content:center; }
+        .patient-inputs input { padding:8px 10px; border-radius:6px; border:1px solid #ddd; min-width:150px; }
+        .patient-inputs input:required { border-left:3px solid #d32f2f; }
+        .compare-chart { height:260px !important; }
+        .clinic-item { background:#f9f9f9; padding:12px; margin-bottom:12px; border-radius:8px; border-left:4px solid #1976d2; }
+        .clinic-item strong { color:#1976d2; font-size:16px; }
+        .clinic-detail { margin-top:6px; font-size:13px; color:#555; }
+        .clinic-rating { color:#ff9800; font-weight:bold; }
+        .error-msg { color:#d32f2f; font-size:13px; margin-top:5px; text-align:center; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>VitalSenseAI</h1>
+
+    <div class="controls">
+        <div class="patient-inputs">
+            <input id="patientName" placeholder="Patient name *" required />
+            <input id="patientAge" placeholder="Age *" type="number" required />
+            <input id="patientGender" placeholder="Gender *" required />
+            <input id="patientPhone" placeholder="Contact number *" required />
+        </div>
+        <p class="error-msg" id="inputError" style="display:none;">Please fill all patient details before scanning</p>
+        <button onclick="startScan()">Start Scan</button>
+        <button id="downloadBtn" onclick="downloadReport()" disabled>Download Report (PDF)</button>
+    </div>
+
+    <p id="status" style="text-align:center;">Status: idle</p>
+
+    <!-- Vitals + ABR -->
+    <div class="card">
+        <div class="row">
+            <div class="col">
+                <h2>Vitals</h2><hr>
+                <pre id="vitals">No vitals yet.</pre>
+            </div>
+            <div class="col">
+                <h2>ABR (3-sigma split)</h2><hr>
+                <div class="abr-charts">
+                    <div class="abr-chart"><canvas id="abrLow"></canvas><div class="small" style="text-align:center">Low (below mean - σ)</div></div>
+                    <div class="abr-chart"><canvas id="abrMed"></canvas><div class="small" style="text-align:center">Medium (within mean ± σ)</div></div>
+                    <div class="abr-chart"><canvas id="abrHigh"></canvas><div class="small" style="text-align:center">High (above mean + σ)</div></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Model results and comparison -->
+    <div class="card">
+        <div class="flex-between">
+            <h2 style="margin:0">Model Results & Comparison</h2>
+            <div id="bestModel" class="small">Best model: <b>N/A</b></div>
+        </div>
+        <hr>
+        <div id="modelComparison" class="small">Loading model comparison...</div>
+        <div id="perModelResults" style="margin-top:12px;"></div>
+
+        <h3 style="margin-top:18px;">Model Accuracy vs AI Evaluation Comparison</h3>
+        <div id="compareTableContainer">
+            <table class="param-table" id="compareTable">
+                <tr><th>Model</th><th>R² (SBP)</th><th>R² (DBP)</th><th>Avg R²</th><th>AI Evaluation</th></tr>
+                <tr><td colspan="5">Waiting for scan...</td></tr>
+            </table>
+        </div>
+    </div>
+
+    <!-- AI summary + parameter evaluation -->
+    <div class="card">
+        <div class="row">
+            <div class="col">
+                <h2>AI Health Summary (table)</h2><hr>
+                <div id="ai_table_container">Waiting for AI summary...</div>
+            </div>
+            <div class="col">
+                <h2>Health Parameter Evaluation (Rule-based)</h2><hr>
+                <table class="param-table" id="paramTable">
+                    <tr><th>Parameter</th><th>Status</th></tr>
+                    <tr><td colspan="2">Waiting for scan...</td></tr>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- doctor recommendation -->
+    <div class="card">
+        <h2>Recommended Doctor</h2><hr>
+        <p id="recommendedDoctor">Recommendation will appear after scan.</p>
+    </div>
+
+    <!-- PPG waveform -->
+    <div class="card">
+        <h2>PPG Waveform</h2><hr>
+        <canvas id="waveform"></canvas>
+        <div id="ppg_desc" class="ppg-desc">
+            <div id="ppg_line1">PPG description line 1 will appear here.</div>
+            <div id="ppg_line2" style="margin-top:6px; color:#666;">PPG description line 2 will appear here.</div>
+        </div>
+        <div class="ppg-explanation">
+            <h4>📊 Understanding Your PPG Waveform:</h4>
+            <ul>
+                <li><strong>Blue Line (PPG Signal):</strong> Shows your blood flow changes with each heartbeat. Regular wave patterns indicate healthy heart rhythm.</li>
+                <li><strong>Red Dots (Peaks):</strong> Each peak represents one heartbeat. The spacing between peaks tells us your heart rate.</li>
+                <li><strong>Wave Height:</strong> Taller waves usually mean stronger blood flow and better oxygen circulation.</li>
+                <li><strong>Regular Pattern:</strong> Consistent wave shapes suggest steady heart function and good cardiovascular health.</li>
+                <li><strong>Irregular Pattern:</strong> If waves are uneven or peaks are missing, it may indicate stress, fatigue, or need for medical consultation.</li>
+            </ul>
+            <p style="margin:8px 0 0 0; font-size:13px; color:#666;"><em>Note: This is a non-invasive optical measurement. For detailed diagnosis, please consult a healthcare professional.</em></p>
+        </div>
+    </div>
+
+    <!-- Nearby clinics -->
+    <div class="card">
+        <h2>Nearby Verified Doctors & Clinics</h2><hr>
+        <div style="margin-bottom:10px;"><button onclick="findNearbyDoctors()">Find Nearby Doctors</button></div>
+        <div id="map"></div>
+        <div id="doctorList" style="margin-top:10px;"></div>
+        <p style="font-size:12px; color:#777;">Data Source: OpenStreetMap / Overpass API | Geocoding: Nominatim</p>
+    </div>
+</div>
+
+<script>
+let waveformChart=null, abrCharts={};
+let currentData=null;
+
+function validatePatientInputs() {
+    const name = document.getElementById("patientName").value.trim();
+    const age = document.getElementById("patientAge").value.trim();
+    const gender = document.getElementById("patientGender").value.trim();
+    const phone = document.getElementById("patientPhone").value.trim();
+    
+    if(!name || !age || !gender || !phone) {
+        document.getElementById("inputError").style.display = "block";
+        return false;
+    }
+    document.getElementById("inputError").style.display = "none";
+    return true;
+}
+
+function getPatientInfo() {
+    return {
+        name: document.getElementById("patientName").value.trim(),
+        age: document.getElementById("patientAge").value.trim(),
+        gender: document.getElementById("patientGender").value.trim(),
+        phone: document.getElementById("patientPhone").value.trim()
+    };
+}
+
+function startScan(){
+    if(!validatePatientInputs()) {
+        return;
+    }
+    
+    const patientInfo = getPatientInfo();
+    document.getElementById("status").innerText = "Status: capturing...";
+    document.getElementById("downloadBtn").disabled = true;
+    
+    fetch("/scan", {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(patientInfo)
+    }).then(r=>{
+        if(!r.ok) throw "scan failed";
+        pollResults();
+    }).catch(e=>{
+        console.error(e);
+        document.getElementById("status").innerText="Error starting scan.";
+    });
+}
+
+function pollResults(){
+    const interval = setInterval(()=>{
+        fetch("/results").then(r=>r.json()).then(data=>{
+            document.getElementById("status").innerText = "Status: " + data.status;
+            if(data.status === "done"){
+                clearInterval(interval);
+                document.getElementById("downloadBtn").disabled = false;
+                currentData = data;
+                
+                // Update vitals
+                document.getElementById("vitals").innerText = Object.entries(data.features).map(([k,v])=>`${k}: ${v}`).join('\n');
+                
+                // Update PPG text
+                document.getElementById("ppg_line1").innerText = `Estimated heart rate: ${data.features["Heart Rate (BPM)"] || "N/A"} BPM.`;
+                document.getElementById("ppg_line2").innerText = `Signal quality: ${data.features["Signal Quality (%)"] || "N/A"}%`;
+                
+                // Update recommended doctor
+                document.getElementById("recommendedDoctor").innerText = data.suggestedDoctor || "General Practitioner";
+                
+                // Update waveform chart
+                updateWaveformChart(data.waveform, data.peaks);
+                
+                // Fetch and update ABR charts
+                fetchABR();
+                
+                // Fetch and update model comparison
+                fetchModelComparison();
+                
+                // Fetch and update AI summary
+                fetchAISummary();
+                
+                // Fetch and update parameter evaluation
+                fetchParameterEvaluation();
+            }
+        }).catch(err=>{
+            console.error(err);
+            clearInterval(interval);
+            document.getElementById("status").innerText="Error fetching results.";
+        });
+    }, 1500);
+}
+
+function updateWaveformChart(waveform, peaks){
+    if(!waveform || waveform.length === 0) return;
+    
+    const ctx = document.getElementById('waveform').getContext('2d');
+    if(waveformChart) waveformChart.destroy();
+    
+    const labels = Array.from({length: waveform.length}, (_, i) => i);
+    const peakData = labels.map(i => peaks && peaks.includes(i) ? waveform[i] : null);
+    
+    waveformChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: labels,
+            datasets: [
+                {
+                    label: 'PPG Signal',
+                    data: waveform,
+                    borderColor: '#1976d2',
+                    borderWidth: 1.5,
+                    fill: false,
+                    pointRadius: 0
+                },
+                {
+                    label: 'Detected Peaks',
+                    data: peakData,
+                    borderColor: '#d32f2f',
+                    backgroundColor: '#d32f2f',
+                    pointRadius: 4,
+                    pointStyle: 'circle',
+                    showLine: false
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                x: { display: false },
+                y: { beginAtZero: false }
+            },
+            plugins: {
+                legend: { display: true, position: 'top' }
+            }
+        }
+    });
+}
+
+function fetchABR(){
+    fetch("/api/abr").then(r=>r.json()).then(abr=>{
+        updateABRCharts(abr);
+    }).catch(err=>console.error("ABR fetch error:", err));
+}
+
+function updateABRCharts(abr){
+    const categories = { Low: [], Med: [], High: [] };
+    
+    Object.entries(abr).forEach(([param, data]) => {
+        if(data.rank === "Low") categories.Low.push({param, percent: data.percent});
+        else if(data.rank === "Moderate") categories.Med.push({param, percent: data.percent});
+        else if(data.rank === "High") categories.High.push({param, percent: data.percent});
+    });
+    
+    createABRChart('abrLow', categories.Low, '#388e3c', 10);  // 0-10 scale
+    createABRChart('abrMed', categories.Med, '#ff9800', 10);  // 0-10 scale
+    createABRChart('abrHigh', categories.High, '#d32f2f', 20); // 0-20 scale
+}
+
+function createABRChart(canvasId, data, color, maxScale){
+    const ctx = document.getElementById(canvasId).getContext('2d');
+    if(abrCharts[canvasId]) abrCharts[canvasId].destroy();
+    
+    if(data.length === 0){
+        data = [{param: 'None', percent: 0}];
+    }
+    
+    abrCharts[canvasId] = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: data.map(d => d.param.substring(0, 15)),
+            datasets: [{
+                label: 'Weight %',
+                data: data.map(d => d.percent),
+                backgroundColor: color
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                y: { beginAtZero: true, max: maxScale }
+            },
+            plugins: {
+                legend: { display: false }
+            }
+        }
+    });
+}
+
+function fetchModelComparison(){
+    fetch("/api/models").then(r=>r.json()).then(data=>{
+        if(data.error){
+            document.getElementById("modelComparison").innerText = "Model comparison file not found.";
+            document.getElementById("bestModel").innerHTML = "Best model: <b>N/A</b>";
+            return;
+        }
+        
+        document.getElementById("bestModel").innerHTML = `Best model: <b>${data.bestmodel || 'N/A'}</b> (Avg R²: ${data.bestavgr2?.toFixed(3) || 'N/A'})`;
+        
+        let html = "<table class='param-table'><tr><th>Model</th><th>MAE SBP</th><th>R² SBP</th><th>MAE DBP</th><th>R² DBP</th><th>Avg R²</th></tr>";
+        data.models.forEach(m => {
+            html += `<tr>
+                <td>${m.Model}</td>
+                <td>${m["MAE (SBP)"]}</td>
+                <td>${m["R² (SBP)"]}</td>
+                <td>${m["MAE (DBP)"]}</td>
+                <td>${m["R² (DBP)"]}</td>
+                <td>${m["Avg R²"]}</td>
+            </tr>`;
+        });
+        html += "</table>";
+        document.getElementById("modelComparison").innerHTML = html;
+    }).catch(err=>console.error("Model comparison error:", err));
+}
+
+function fetchParameterEvaluation(){
+    fetch("/api/evaluate").then(r=>r.json()).then(data=>{
+        updateParameterTable(data.evaluations);
+        updatePerModelResults(data.modelmetrics, data.bestmodel);
+        updateCompareTable(data.modelmetrics, data.ai_accuracy);
+    }).catch(err=>console.error("Parameter evaluation error:", err));
+}
+
+function updateParameterTable(evaluations){
+    const firstAlgo = Object.keys(evaluations)[0];
+    if(!firstAlgo) return;
+    
+    const params = evaluations[firstAlgo];
+    let html = "<tr><th>Parameter</th><th>Status</th></tr>";
+    
+    Object.entries(params).forEach(([param, data]) => {
+        if(data.status === "Normal" || data.status === "Abnormal") {
+            const statusClass = data.status === "Normal" ? "status-normal" : "status-abnormal";
+            html += `<tr>
+                <td>${param}</td>
+                <td class="${statusClass}">${data.status}<br><small>${data.reason || ''}</small></td>
+            </tr>`;
+        }
+    });
+    
+    document.getElementById("paramTable").innerHTML = html;
+}
+
+function updatePerModelResults(metrics, bestModel){
+    let html = "";
+    Object.entries(metrics).forEach(([model, m]) => {
+        html += `<div class="model-block">
+            <div class="model-title">${model}${model === bestModel ? ' ⭐' : ''}</div>
+            <div>MAE (SBP): ${m["MAE (SBP)"]} | R² (SBP): ${m["R² (SBP)"]}</div>
+            <div>MAE (DBP): ${m["MAE (DBP)"]} | R² (DBP): ${m["R² (DBP)"]}</div>
+            <div>Avg R²: ${m["Avg R²"]}</div>
+        </div>`;
+    });
+    document.getElementById("perModelResults").innerHTML = html || "No model metrics available.";
+}
+
+function updateCompareTable(metrics, aiAccuracy){
+    let html = "<tr><th>Model</th><th>R² (SBP)</th><th>R² (DBP)</th><th>Avg R²</th><th>AI Evaluation</th></tr>";
+    
+    Object.entries(metrics).forEach(([model, m]) => {
+        const aiEval = aiAccuracy && aiAccuracy[model] ? aiAccuracy[model].toFixed(3) : "N/A";
+        html += `<tr>
+            <td>${model}</td>
+            <td>${m["R² (SBP)"]}</td>
+            <td>${m["R² (DBP)"]}</td>
+            <td>${m["Avg R²"]}</td>
+            <td>${aiEval}</td>
+        </tr>`;
+    });
+    
+    document.getElementById("compareTable").innerHTML = html;
+}
+
+function fetchAISummary(){
+    fetch("/api/ai_summary").then(r=>r.json()).then(data=>{
+        updateAITable(data.ai_table);
+    }).catch(err=>console.error("AI summary error:", err));
+}
+
+function updateAITable(aiTable){
+    if(!aiTable || aiTable.length === 0){
+        document.getElementById("ai_table_container").innerHTML = "No AI summary available.";
+        return;
+    }
+    
+    let html = "<table class='param-table'><tr><th>Parameter</th><th>Status</th><th>Note</th></tr>";
+    aiTable.forEach(row => {
+        const statusClass = row.status === "Normal" ? "status-normal" : 
+                           row.status === "Abnormal" ? "status-abnormal" : "";
+        html += `<tr>
+            <td>${row.name}</td>
+            <td class="${statusClass}">${row.status}</td>
+            <td>${row.note || '-'}</td>
+        </tr>`;
+    });
+    html += "</table>";
+    document.getElementById("ai_table_container").innerHTML = html;
+}
+
+function downloadReport(){
+    if(!currentData) return alert("No report yet.");
+    window.location.href = '/download_report';
+}
+
+/* Nearby clinics with enhanced information */
+async function findNearbyDoctors(){
+    if(!navigator.geolocation) return alert("Enable location.");
+    navigator.geolocation.getCurrentPosition(async (pos)=>{
+        const lat = pos.coords.latitude, lon = pos.coords.longitude;
+        const map = L.map('map').setView([lat,lon],13);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+        L.marker([lat,lon]).addTo(map).bindPopup("You are here").openPopup();
+        document.getElementById("doctorList").innerHTML = "Fetching nearby clinics...";
+        
+        const query = `[out:json];(node["amenity"~"clinic|hospital|doctors"](around:6000,${lat},${lon});way["amenity"~"clinic|hospital|doctors"](around:6000,${lat},${lon}););out center tags;`;
+        
+        try {
+            let r = await fetch("https://overpass-api.de/api/interpreter", { method:'POST', body: query });
+            if(!r.ok) throw "Network error";
+            const data = await r.json();
+            await showClinicsEnhanced(map, data);
+        } catch(err){
+            console.error(err);
+            document.getElementById("doctorList").innerHTML = "<div style='color:#d32f2f;'>Unable to fetch clinics. Please try again.</div>";
+        }
+    }, ()=> alert("Please allow location access."));
+}
+
+async function showClinicsEnhanced(map, data){
+    const arr = (data.elements || []).slice(0,15);
+    let html = "";
+    
+    for(let el of arr) {
+        const name = (el.tags && (el.tags.name || el.tags["official_name"])) || "Unnamed Clinic";
+        const lat = el.lat || (el.center && el.center.lat);
+        const lon = el.lon || (el.center && el.center.lon);
+        
+        const phone = el.tags && (el.tags.phone || el.tags["contact:phone"] || el.tags["telephone"]) || "Not available";
+        const website = el.tags && (el.tags.website || el.tags.url) || "Not available";
+        const rating = el.tags && el.tags["rating"] ? `⭐ ${el.tags.rating}` : "No rating";
+        const amenity = el.tags && el.tags.amenity ? el.tags.amenity.charAt(0).toUpperCase() + el.tags.amenity.slice(1) : "Healthcare";
+        
+        let location = "Location unavailable";
+        if(lat && lon) {
+            try {
+                const geoResp = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}&zoom=16`);
+                if(geoResp.ok) {
+                    const geoData = await geoResp.json();
+                    const addr = geoData.address || {};
+                    const area = addr.suburb || addr.neighbourhood || addr.village || addr.town || "";
+                    const city = addr.city || addr.state_district || addr.state || "";
+                    location = area && city ? `${area}, ${city}` : (area || city || "Unknown location");
+                }
+            } catch(e) {
+                console.error("Geocoding error:", e);
+            }
+        }
+        
+        const link = lat && lon ? `https://maps.google.com/?q=${lat},${lon}` : "#";
+        
+        html += `<div class="clinic-item">
+            <strong>${name}</strong> <span style="font-size:12px; color:#666;">(${amenity})</span>
+            <div class="clinic-detail">📍 ${location}</div>
+            <div class="clinic-detail">📞 ${phone}</div>
+            <div class="clinic-detail">🌐 ${website !== "Not available" ? `<a href="${website}" target="_blank">${website}</a>` : website}</div>
+            <div class="clinic-detail clinic-rating">${rating}</div>
+            <div style="margin-top:8px;"><a href='${link}' target='_blank' style="color:#1976d2; text-decoration:none; font-weight:500;">📌 Open in Google Maps →</a></div>
+        </div>`;
+        
+        if(lat && lon) {
+            L.marker([lat,lon]).addTo(map).bindPopup(`
+                <b>${name}</b><br>
+                ${amenity}<br>
+                📍 ${location}<br>
+                📞 ${phone}<br>
+                ${rating}<br>
+                <a href='${link}' target='_blank'>Google Maps</a>
+            `);
+        }
+        
+        await new Promise(resolve => setTimeout(resolve, 200));
+    }
+    
+    document.getElementById("doctorList").innerHTML = html || "No clinics found nearby.";
+}
+</script>
+</body>
+</html>
